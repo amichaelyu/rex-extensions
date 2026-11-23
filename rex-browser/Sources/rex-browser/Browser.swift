@@ -55,12 +55,27 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     var generation = 0
 
     // Frames.
-    var current: Frame?
-    var previous: Frame?
+    var pxW = 0
+    var pxH = 0
+    var previous: Pixels?
+    var lastImage: CGImage?
+    var rgbBuffer: [UInt8] = []
+    var frameRequested = false
+    var lastSnapshot = 0.0
+    var snapshotScheduled = false
+    var pendingScroll: (dx: Double, dy: Double, point: CGPoint)?
+    var scrollInFlight = false
     var snapshotting = false
     var idleFrames = 0
     var ticks = 0
-    var stats = (frames: 0, sentFrames: 0, snapMs: 0.0, since: Date())
+    struct Stats {
+        var frames = 0, sentFrames = 0, pixels = 0
+        var rects = 0, shifts = 0
+        var snap = 0.0, draw = 0.0, diff = 0.0, scroll = 0.0, pack = 0.0, send = 0.0
+        var since = Date()
+    }
+    var stats = Stats()
+    var loggedFormat = false
 
     // Address bar.
     var editing = false
@@ -144,7 +159,14 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
                 var buf = [UInt8](repeating: 0, count: 65536)
                 let n = read(0, &buf, buf.count)
                 if n <= 0 { self.quit() }
-                for event in self.parser.feed(Array(buf[0..<n])) { self.handle(event) }
+                let events = self.parser.feed(Array(buf[0..<n]))
+                for (i, event) in events.enumerated() {
+                    // Only the last of a run of pointer moves matters.
+                    if case .mouse(let m) = event, m.kind == .move, i + 1 < events.count,
+                       case .mouse(let next) = events[i + 1], next.kind == .move { continue }
+                    self.handle(event)
+                }
+                if !events.isEmpty { self.requestFrame() }
             }
         }
         input.resume()
@@ -169,13 +191,21 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     /// Writes the last frame sent to the pane as a PNG (on SIGUSR1), for debugging.
+    /// On SIGUSR1: writes the last snapshot as a PNG and its RGB bytes, for debugging.
     private func dumpFrame() {
-        guard let frame = previous, let image = frame.context.makeImage() else { return }
-        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rex-browser-frame.png")
-        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { return }
-        CGImageDestinationAddImage(dest, image, nil)
-        CGImageDestinationFinalize(dest)
-        Log.write("frame written to \(url.path)")
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        if let image = lastImage,
+           let dest = CGImageDestinationCreateWithURL(dir.appendingPathComponent("rex-browser-frame.png") as CFURL,
+                                                      "public.png" as CFString, 1, nil) {
+            CGImageDestinationAddImage(dest, image, nil)
+            CGImageDestinationFinalize(dest)
+        }
+        if let frame = previous {
+            frame.rgb(Rect(x: 0, y: 0, w: frame.width, h: frame.height), into: &rgbBuffer)
+            let data = Data(rgbBuffer[0..<(frame.width * frame.height * 3)])
+            try? data.write(to: dir.appendingPathComponent("rex-browser-frame.rgb"))
+        }
+        Log.write("frame written to \(dir.path)/rex-browser-frame.{png,rgb}")
     }
 
     private func observe() {
@@ -227,7 +257,8 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         window.setContentSize(NSSize(width: CGFloat(width) / scale, height: CGFloat(height) / scale))
         window.setFrameOrigin(NSPoint(x: -30000, y: -30000))
 
-        current = Frame(width: width, height: height)
+        pxW = width
+        pxH = height
         previous = nil
         generation += 1
         kitty.delete()
@@ -247,63 +278,144 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
             notice = nil
             renderBar()
         }
-        guard !snapshotting, current != nil else { return }
-        // Idle pages are checked 10 times a second instead of 60.
-        if idleFrames > 30, ticks % 6 != 0 { return }
+        // A resize can land before the SIGWINCH handler exists; check 4 times a second.
+        if ticks % 15 == 0, !resizePending, term.size() != tsize { scheduleLayout() }
+        // Still pages are checked 10 times a second, then 4 after 5 s.
+        if !frameRequested {
+            if idleFrames > 80, ticks % 15 != 0 { return }
+            if idleFrames > 30, ticks % 6 != 0 { return }
+        }
+        snapshot()
+    }
+
+    /// Takes a snapshot now (or right after the one in flight), for input.
+    func requestFrame() {
+        frameRequested = true
+        idleFrames = 0
+        snapshot()
+    }
+
+    private func snapshot() {
+        guard !snapshotting, pxW > 0, pxH > 0 else { return }
+        // At most 120 snapshots a second; a request that comes sooner waits.
+        let wait = lastSnapshot + 1.0 / 120 - CACurrentMediaTime()
+        if wait > 0 {
+            if !snapshotScheduled {
+                snapshotScheduled = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.snapshotScheduled = false
+                        self?.snapshot()
+                    }
+                }
+            }
+            return
+        }
+        // Don't queue frames the terminal hasn't caught up with; the timer retries.
+        if kitty.busy { return }
+        frameRequested = false
         snapshotting = true
         let gen = generation
         let config = WKSnapshotConfiguration()
         config.rect = web.bounds
         config.snapshotWidth = NSNumber(value: Double(web.bounds.width))
         let started = CACurrentMediaTime()
+        lastSnapshot = started
         web.takeSnapshot(with: config) { [weak self] image, _ in
             guard let self else { return }
             self.snapshotting = false
-            guard gen == self.generation, let image,
-                  let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-            else { return }
-            self.present(cg, snapMs: (CACurrentMediaTime() - started) * 1000)
+            if gen == self.generation, let image,
+               let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                self.present(cg, snapMs: (CACurrentMediaTime() - started) * 1000)
+            }
+            if self.frameRequested { self.snapshot() }
         }
     }
 
     private func present(_ image: CGImage, snapMs: Double) {
-        guard let frame = current else { return }
-        frame.draw(image)
-        stats.frames += 1
-        stats.snapMs += snapMs
-
-        let rows = max(tsize.rows, barRows + 1) - barRows
-        if let old = previous, kitty.placed {
-            guard let r = frame.changed(since: old) else {
-                idleFrames += 1
-                logStats(image)
-                return
-            }
-            kitty.update(frame.rgb(x: r.x, y: r.y, w: r.w, h: r.h), x: r.x, y: r.y, width: r.w, height: r.h)
-        } else {
-            let rgb = frame.rgb(x: 0, y: 0, w: frame.width, h: frame.height)
-            kitty.create(rgb, width: frame.width, height: frame.height, cols: max(tsize.cols, 1), rows: rows, row: barRows + 1)
-            renderBar()
+        if !loggedFormat, Log.enabled {
+            loggedFormat = true
+            Log.write("snapshot \(image.width)x\(image.height) \(image.colorSpace?.name as String? ?? "?") bpp \(image.bitsPerPixel) info \(image.bitmapInfo.rawValue) alpha \(image.alphaInfo.rawValue)")
         }
-        idleFrames = 0
+        var t = CACurrentMediaTime()
+        func lap() -> Double { let n = CACurrentMediaTime(); defer { t = n }; return (n - t) * 1000 }
+        guard let frame = Pixels.from(image, width: pxW, height: pxH) else { return }
+        lastImage = image
+        stats.frames += 1
+        stats.snap += snapMs
+        stats.draw += lap()
+
+        guard let old = previous, kitty.placed else {
+            let full = Rect(x: 0, y: 0, w: frame.width, h: frame.height)
+            frame.rgb(full, into: &rgbBuffer)
+            stats.pack += lap()
+            let rows = max(tsize.rows, barRows + 1) - barRows
+            rgbBuffer.withUnsafeBytes { buf in
+                kitty.create(UnsafeRawBufferPointer(rebasing: buf[0..<(full.area * 3)]), width: full.w, height: full.h,
+                             cols: max(tsize.cols, 1), rows: rows, row: barRows + 1)
+            }
+            stats.send += lap()
+            stats.pixels += full.area
+            stats.sentFrames += 1
+            previous = frame
+            idleFrames = 0
+            renderBar()
+            logStats()
+            return
+        }
+
+        var rects = frame.changes(since: old)
+        stats.diff += lap()
+        guard !rects.isEmpty else {
+            idleFrames += 1
+            logStats()
+            return
+        }
+        // A big change is usually a scroll: move what's already on screen and
+        // send only what's new, when that's at most half as many pixels.
+        var shifts: [Shift] = []
+        let area = rects.reduce(0) { $0 + $1.area }
+        if area > frame.width * frame.height / 4 {
+            let runs = frame.scroll(from: old)
+            if !runs.isEmpty {
+                let shifted = frame.changes(since: old, shifts: runs)
+                if shifted.reduce(0, { $0 + $1.area }) * 2 < area {
+                    shifts = runs
+                    rects = shifted
+                }
+            }
+        }
+        stats.scroll += lap()
+        kitty.shift(shifts, width: frame.width)
+        if !shifts.isEmpty { stats.shifts += 1 }
+        for r in rects {
+            frame.rgb(r, into: &rgbBuffer)
+            stats.pack += lap()
+            rgbBuffer.withUnsafeBytes { buf in
+                kitty.update(UnsafeRawBufferPointer(rebasing: buf[0..<(r.area * 3)]), r)
+            }
+            stats.send += lap()
+            stats.pixels += r.area
+            stats.rects += 1
+        }
         stats.sentFrames += 1
-        // The frame just sent becomes the reference; the old one is redrawn next.
-        current = previous ?? Frame(width: frame.width, height: frame.height)
         previous = frame
-        logStats(image)
+        idleFrames = 0
+        logStats()
     }
 
-    private func logStats(_ image: CGImage) {
+    private func logStats() {
         guard Log.enabled else { return }
         let elapsed = Date().timeIntervalSince(stats.since)
         guard elapsed >= 2 else { return }
+        let n = Double(max(stats.frames, 1)), m = Double(max(stats.sentFrames, 1))
         Log.write(String(
-            format: "%.0f snapshots/s, %.0f sent/s, %.1f ms/snapshot, %.1f MB/s, image %dx%d",
-            Double(stats.frames) / elapsed, Double(stats.sentFrames) / elapsed,
-            stats.snapMs / Double(max(stats.frames, 1)), Double(kitty.bytesSent) / elapsed / 1e6,
-            image.width, image.height
+            format: "%.0f snap/s %.0f sent/s | per snapshot: snap %.1f read %.1f diff %.1f ms | per sent: scroll %.1f pack %.1f send %.1f ms, %.0f kpx, %.1f rects, %d shifts | %.1f MB/s",
+            n / elapsed, Double(stats.sentFrames) / elapsed, stats.snap / n, stats.draw / n, stats.diff / n,
+            stats.scroll / m, stats.pack / m, stats.send / m, Double(stats.pixels) / m / 1000,
+            Double(stats.rects) / m, stats.shifts, Double(kitty.bytesSent) / elapsed / 1e6
         ))
-        stats = (0, 0, 0, Date())
+        stats = Stats()
         kitty.resetBytes()
     }
 
@@ -571,17 +683,21 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// Scrolls the scrollable element under `point` by (dx, dy) points, as a
     /// wheel does: page wheel listeners see it first and may cancel it.
     private func scroll(dx: Double, dy: Double, at point: CGPoint) {
-        if ProcessInfo.processInfo.environment["REX_BROWSER_NATIVE_SCROLL"] == "1",
-           let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
-                            wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) {
-            let local = NSPoint(x: point.x, y: web.bounds.height - point.y)
-            let primary = NSScreen.screens.first?.frame.height ?? 0
-            cg.location = CGPoint(x: local.x, y: primary - local.y)
-            if let event = NSEvent(cgEvent: cg) {
-                web.scrollWheel(with: event)
-                return
-            }
+        if let p = pendingScroll {
+            pendingScroll = (p.dx + dx, p.dy + dy, point)
+        } else {
+            pendingScroll = (dx, dy, point)
         }
+        flushScroll()
+    }
+
+    /// Scrolls the scrollable element under the pointer by every wheel tick
+    /// that arrived since the last scroll, as a wheel does: page wheel
+    /// listeners see it first and may cancel it. One scroll runs at a time.
+    private func flushScroll() {
+        guard !scrollInFlight, let p = pendingScroll else { return }
+        pendingScroll = nil
+        scrollInFlight = true
         let js = """
         let el = document.elementFromPoint(x, y);
         const wheel = new WheelEvent('wheel', {deltaX: -dx, deltaY: -dy, clientX: x, clientY: y,
@@ -602,9 +718,14 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         (document.scrollingElement || document.documentElement).scrollBy({left: -dx, top: -dy, behavior: 'instant'});
         """
         web.callAsyncJavaScript(
-            js, arguments: ["x": point.x, "y": point.y, "dx": dx, "dy": dy],
-            in: nil, in: .page, completionHandler: nil
-        )
+            js, arguments: ["x": p.point.x, "y": p.point.y, "dx": p.dx, "dy": p.dy],
+            in: nil, in: .page
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.scrollInFlight = false
+            self.requestFrame()
+            self.flushScroll()
+        }
     }
 
     // MARK: WebKit delegates
