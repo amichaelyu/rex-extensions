@@ -96,6 +96,46 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     var lastVideoFrame = 0.0
+    var capture: WindowCapture?
+    var captured: CGImage?
+
+    /// Window capture: the window server streams the hidden window's
+    /// composited frames (with video, about 0 ms each, versus a software
+    /// repaint of the whole page per snapshot). Falls back to snapshots if it
+    /// can't start; REX_BROWSER_SNAPSHOT=1 forces snapshots.
+    func startCapture() {
+        guard ProcessInfo.processInfo.environment["REX_BROWSER_SNAPSHOT"] != "1" else { return }
+        let c = WindowCapture()
+        c.onFrame = { [weak self] image, _ in
+            MainActor.assumeIsolated {
+                self?.captured = image
+                self?.flushCaptured()
+            }
+        }
+        c.onFailure = { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.capture != nil else { return }
+                self.capture = nil
+                Log.write("capture: falling back to snapshots")
+                self.requestFrame()
+            }
+        }
+        c.start(windowNumber: window.windowNumber, width: pxW, height: pxH)
+        capture = c
+    }
+
+    /// Sends the latest captured frame once the terminal has read the last
+    /// one. Capture only delivers changes, so a frame that had to wait is
+    /// kept, never dropped.
+    func flushCaptured() {
+        guard let image = captured else { return }
+        if kitty.busy {
+            stats.busy += 1
+            return
+        }
+        captured = nil
+        present(image, snapMs: 0)
+    }
 
     func videoFrame() {
         lastVideoFrame = CACurrentMediaTime()
@@ -109,7 +149,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         // Hide the cursor, clear, and turn on any-motion SGR mouse reports in
         // pixels (1003, 1006, 1016) and bracketed paste (2004). Normal screen:
         // Rex doesn't draw kitty images on the alternate one.
-        term.write("\u{1b}[?25l\u{1b}[2J\u{1b}[?1003h\u{1b}[?1006h\u{1b}[?1016h\u{1b}[?2004h")
+        term.write("\u{1b}[?7l\u{1b}[?25l\u{1b}[2J\u{1b}[?1003h\u{1b}[?1006h\u{1b}[?1016h\u{1b}[?2004h")
 
         let config = WKWebViewConfiguration()
         config.preferences.inactiveSchedulingPolicy = .none
@@ -130,10 +170,15 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         callSPI(web, "_setWindowOcclusionDetectionEnabled:", bool: false)
 
         window = HostWindow(
-            contentRect: NSRect(x: -30000, y: -30000, width: 800, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.borderless], backing: .buffered, defer: false
         )
         window.isReleasedWhenClosed = false
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        // On a real screen (so it composites at its Retina scale) but below
+        // the desktop wallpaper, where nothing can show it.
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)
         // Not a window anyone should see: keep it out of Mission Control,
         // window cycling and the Window menu.
         window.collectionBehavior = [.transient, .ignoresCycle, .fullScreenNone]
@@ -145,6 +190,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         layout()
         observe()
         listen()
+        startCapture()
 
         let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -162,8 +208,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func quit() {
         timer?.invalidate()
+        capture?.stop()
         kitty.delete()
-        term.write("\u{1b}[?1016l\u{1b}[?1006l\u{1b}[?1003l\u{1b}[?2004l\u{1b}[0m\u{1b}[2J\u{1b}[H\u{1b}[?25h")
+        term.write("\u{1b}[?7h\u{1b}[?1016l\u{1b}[?1006l\u{1b}[?1003l\u{1b}[?2004l\u{1b}[0m\u{1b}[2J\u{1b}[H\u{1b}[?25h")
         term.restore()
         kitty.cleanup()
         exit(0)
@@ -273,14 +320,20 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         let width = Int((Double(cols) * cellW).rounded())
         let height = Int((Double(rows - barRows) * cellH).rounded())
         window.setContentSize(NSSize(width: CGFloat(width) / scale, height: CGFloat(height) / scale))
-        window.setFrameOrigin(NSPoint(x: -30000, y: -30000))
+        window.setFrameOrigin(NSScreen.main?.frame.origin ?? .zero)
 
         pxW = width
         pxH = height
+        capture?.resize(width: width, height: height)
         previous = nil
         generation += 1
-        // Stretch the old frame over the new size right away; the next
-        // snapshot replaces it at full sharpness.
+        // A narrower pane rewraps the old address bar onto the rows below,
+        // whose gray then shows beside the image: blank every row (line by
+        // line, since clearing the screen would delete the image), then
+        // stretch the old frame over the new size until the sharp one lands.
+        var blank = "\u{1b}[0m"
+        for r in 1...rows { blank += "\u{1b}[\(r);1H\u{1b}[2K" }
+        term.write(blank)
         kitty.place(cols: cols, rows: rows - barRows, row: barRows + 1)
         renderBar()
         requestFrame()
@@ -300,6 +353,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         // A resize can land before the SIGWINCH handler exists; check 4 times a second.
         if ticks % 15 == 0, !resizePending, term.size() != tsize { scheduleLayout() }
         // Still pages are checked 10 times a second, then 4 after 5 s.
+        if capture != nil {
+            flushCaptured()
+            return
+        }
         if !frameRequested {
             // While a video drives frames, the timer only looks for other changes.
             if CACurrentMediaTime() - lastVideoFrame < 0.2, ticks % 4 != 0 { return }
@@ -317,6 +374,11 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     private func snapshot() {
+        // With window capture running, frames come from it, not snapshots.
+        if capture != nil {
+            flushCaptured()
+            return
+        }
         guard !snapshotting, pxW > 0, pxH > 0 else { return }
         // At most 120 snapshots a second; a request that comes sooner waits.
         let wait = lastSnapshot + 1.0 / 120 - CACurrentMediaTime()

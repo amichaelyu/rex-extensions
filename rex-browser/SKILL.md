@@ -38,12 +38,21 @@ rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --ratio 50 \
 
 ## How it works
 
-- WebKit draws into a borderless window at (-30000, -30000) that claims to be
-  key, so the page acts focused. Two private WebKit setters, called only if
-  present: `_setWindowOcclusionDetectionEnabled:` (keep the offscreen page
-  rendering at full speed) and `_setOverrideDeviceScaleFactor:` (render at the
-  pane's device pixels; Rex reports 2x cells as 14x28 px).
-- Frames: `takeSnapshot` (about 3 ms at 1400x2128); its sRGB pixels are read
+- WebKit draws into a borderless, shadowless window that claims to be key (so
+  the page acts focused), sits on the main screen below the desktop wallpaper
+  (so it composites at Retina scale but is never visible) and is `.transient`
+  (out of Mission Control). `_setWindowOcclusionDetectionEnabled:` keeps the
+  covered page rendering at full speed; `_setOverrideDeviceScaleFactor:`
+  matches the pane's device pixels (Rex reports 2x cells as 14x28 px).
+- Capture: ScreenCaptureKit streams the window's GPU-composited frames
+  (`getCurrentProcessShareableContent`, so no Screen Recording permission),
+  only when something changed. `takeSnapshot` repaints the whole page in
+  software (3 ms on Wikipedia, 370 ms on YouTube), so it is only the fallback
+  if capture can't start (`REX_BROWSER_SNAPSHOT=1` forces it).
+  `shouldBeOpaque` breaks the stream (error -3805); leave it off. A frame that
+  arrives while the terminal hasn't read the last file is kept and sent next,
+  since capture won't resend it.
+- Frames: the captured sRGB pixels are read
   as they are (no redraw), diffed row by row against the last frame sent, and
   each changed band of rows goes out as `a=f,r=1,x,y,s,v,X=1` (RGB packed with
   vImage, sent as temp files `t=t`). A big change is checked for a scroll: row

@@ -3,12 +3,12 @@ import PackageDescription
 
 let package = Package(
     name: "rex-browser",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("14.4")],
     targets: [
         .executableTarget(
             name: "rex-browser",
             path: "Sources/rex-browser",
-            linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("WebKit")]
+            linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("WebKit"), .linkedFramework("ScreenCaptureKit"), .linkedFramework("VideoToolbox")]
         ),
     ]
 )
