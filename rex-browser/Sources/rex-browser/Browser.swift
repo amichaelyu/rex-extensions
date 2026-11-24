@@ -72,6 +72,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     // Geometry: the top row is the address bar, the image fills the rest.
     let barRows = 1
+    var barHeight = 28
+    var barButtons: [(Range<Int>, BarAction)] = []
+    var barTimer: Timer?
     var tsize = Terminal.Size(cols: 80, rows: 24, xpx: 0, ypx: 0)
     var cellW = 14.0
     var cellH = 28.0
@@ -342,11 +345,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         callSPI(web, "_setOverrideDeviceScaleFactor:", float: scale)
 
         let width = Int((Double(cols) * cellW).rounded())
-        // 2.5 pt of bar-colored padding under the bar: the bar's glyphs sit
-        // 2.5 pt lower than the middle of their row, so this evens it out.
-        let pad = Int((2.5 * Double(scale)).rounded())
-        kitty.top = pad
-        let height = Int((Double(rows - barRows) * cellH).rounded()) - pad
+        // The image covers every row; its top row is the drawn address bar.
+        barHeight = Int(cellH.rounded())
+        kitty.top = barHeight
+        let height = Int((Double(rows) * cellH).rounded()) - barHeight
         window.setContentSize(NSSize(width: CGFloat(width) / scale, height: CGFloat(height) / scale))
         window.setFrameOrigin(NSScreen.main?.frame.origin ?? .zero)
 
@@ -362,7 +364,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         var blank = "\u{1b}[0m"
         for r in 1...rows { blank += "\u{1b}[\(r);1H\u{1b}[2K" }
         term.write(blank)
-        kitty.place(cols: cols, rows: rows - barRows, row: barRows + 1)
+        kitty.place(cols: cols, rows: rows, row: 1)
         renderBar()
         requestFrame()
         Log.write("layout \(cols)x\(rows) cells, \(width)x\(height) px, cell \(cellW)x\(cellH), scale \(scale)")
@@ -463,10 +465,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
             let full = Rect(x: 0, y: 0, w: frame.width, h: frame.height)
             frame.rgb(full, into: &rgbBuffer)
             stats.pack += lap()
-            let rows = max(tsize.rows, barRows + 1) - barRows
+            let rows = max(tsize.rows, barRows + 1)
             rgbBuffer.withUnsafeBytes { buf in
                 kitty.create(UnsafeRawBufferPointer(rebasing: buf[0..<(full.area * 3)]), width: full.w, height: full.h,
-                             cols: max(tsize.cols, 1), rows: rows, row: barRows + 1)
+                             cols: max(tsize.cols, 1), rows: rows, row: 1)
             }
             stats.send += lap()
             stats.pixels += full.area
@@ -535,55 +537,35 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     // MARK: Address bar
 
+    /// Redraws the address bar into the top of the image. Calls within one
+    /// run-loop pass (KVO bursts while loading) draw once.
     func renderBar() {
-        let cols = max(tsize.cols, 1)
-        let bg = "\u{1b}[0m\u{1b}[48;5;236m\u{1b}[38;5;252m"
-        let dim = "\u{1b}[38;5;243m"
-        let normal = "\u{1b}[38;5;252m"
-        var s = "\u{1b}[1;1H" + bg
-        if editing {
-            let prefix = " › "
-            let room = max(cols - prefix.count - 1, 1)
-            let first = max(0, cursor - room + 1)
-            let shown = String(edit[first..<min(edit.count, first + room)])
-            s += prefix + shown + String(repeating: " ", count: max(0, cols - prefix.count - shown.count))
-            s += "\u{1b}[1;\(prefix.count + cursor - first + 1)H\u{1b}[?25h"
-            term.write(s)
-            return
+        guard barTimer == nil else { return }
+        barTimer = Timer.scheduledTimer(withTimeInterval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.barTimer = nil
+                self?.drawBar()
+            }
         }
-        let back = web.canGoBack ? "❮" : dim + "❮" + normal
-        let forward = web.canGoForward ? "❯" : dim + "❯" + normal
-        let reload = web.isLoading ? "×" : "⟳"
-        s += " \(back)  \(forward)  \(reload)  " + dim + "│" + normal + " "
-        let used = 12
-        var text: String
-        var detail = ""
-        if let notice {
-            text = notice
-        } else {
-            text = web.title ?? ""
-            let url = web.url?.absoluteString ?? ""
-            if text.isEmpty { text = url } else { detail = url }
-        }
-        let right = web.isLoading ? " \(Int(web.estimatedProgress * 100))% " : ""
-        let room = max(cols - used - right.count, 0)
-        let main = truncate(text, room)
-        var rest = room - main.count
-        s += main
-        if !detail.isEmpty, rest > 4 {
-            let extra = truncate(detail, rest - 2)
-            s += dim + "  " + extra + normal
-            rest -= 2 + extra.count
-        }
-        s += String(repeating: " ", count: max(0, rest)) + dim + right
-        s += "\u{1b}[0m\u{1b}[?25l"
-        term.write(s)
     }
 
-    private func truncate(_ s: String, _ n: Int) -> String {
-        guard n > 0 else { return "" }
-        let flat = s.replacingOccurrences(of: "\n", with: " ")
-        return flat.count <= n ? flat : String(flat.prefix(n - 1)) + "…"
+    private func drawBar() {
+        guard web != nil else { return }
+        var state = BarState()
+        state.canGoBack = web.canGoBack
+        state.canGoForward = web.canGoForward
+        state.loading = web.isLoading
+        state.progress = web.estimatedProgress
+        state.title = web.title ?? ""
+        state.url = web.url?.absoluteString ?? ""
+        state.notice = notice
+        state.editing = editing
+        state.edit = String(edit)
+        state.cursor = cursor
+        let width = Int((Double(max(tsize.cols, 1)) * cellW).rounded())
+        let (rgb, buttons) = BarRenderer.render(state, width: width, height: barHeight, scale: scale)
+        barButtons = buttons
+        kitty.updateBar(rgb, width: width)
     }
 
     func show(notice text: String) {
@@ -724,15 +706,11 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         // Pixel position in the pane (1016 reports 1-based pixels).
         let px = Double(m.x - 1)
         let py = Double(m.y - 1)
-        let row = Int(py / cellH)
-        let col = Int(px / cellW)
-
-        if row < barRows, !leftDown {
-            if m.kind == .press, m.button == 0 { barClick(col) }
+        let pageY = py - Double(barHeight)
+        if pageY < 0, !leftDown {
+            if m.kind == .press, m.button == 0 { barClick(Int(px)) }
             return
         }
-        let pageY = py - Double(barRows) * cellH - Double(kitty.top)
-        if pageY < 0, !leftDown { return }
         let point = CGPoint(x: px / scale, y: max(pageY, 0) / scale)
         var flags: NSEvent.ModifierFlags = []
         if m.mods.contains(.shift) { flags.insert(.shift) }
@@ -771,12 +749,12 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         }
     }
 
-    private func barClick(_ col: Int) {
-        switch col {
-        case 0...2: web.goBack()
-        case 3...5: web.goForward()
-        case 6...8: if web.isLoading { web.stopLoading() } else { web.reload() }
-        default: startEditing(prefill: web.url?.absoluteString ?? "")
+    private func barClick(_ x: Int) {
+        switch barButtons.first(where: { $0.0.contains(x) })?.1 ?? .edit {
+        case .back: web.goBack()
+        case .forward: web.goForward()
+        case .reload: if web.isLoading { web.stopLoading() } else { web.reload() }
+        case .edit: startEditing(prefill: web.url?.absoluteString ?? "")
         }
     }
 

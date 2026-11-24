@@ -32,11 +32,11 @@ final class KittyImage {
     let inline: Bool
     let id = 6161
     private(set) var placed = false
-    /// Gray rows above the page inside the image (padding under the address
-    /// bar); page coordinates are offset by this many pixels.
+    /// Rows above the page inside the image, holding the drawn address bar;
+    /// page coordinates are offset by this many pixels.
     var top = 0
-    /// The address bar's color (xterm 236).
-    static let barColor: [UInt8] = [48, 48, 48]
+    /// The bar's latest pixels (`top` rows of RGB), used when the image is made.
+    var bar: [UInt8] = []
     private var hasScratch = false
     private var sent: [String] = []
     private var lastFile: String?
@@ -60,7 +60,11 @@ final class KittyImage {
         term.write("\u{1b}[\(row);1H")
         var image = [UInt8]()
         image.reserveCapacity((height + top) * width * 3)
-        for _ in 0..<(top * width) { image += Self.barColor }
+        if bar.count == top * width * 3 {
+            image += bar
+        } else {
+            image += [UInt8](repeating: 48, count: top * width * 3)
+        }
         image += rgb
         image.withUnsafeBytes { all in
             send("a=T,f=24,s=\(width),v=\(height + top),i=\(id),p=1,c=\(cols),r=\(rows),C=1,q=2", all)
@@ -73,6 +77,15 @@ final class KittyImage {
     func place(cols: Int, rows: Int, row: Int) {
         guard placed else { return }
         term.write("\u{1b}[\(row);1H\u{1b}_Ga=p,i=\(id),p=1,c=\(cols),r=\(rows),C=1,q=2\u{1b}\\")
+    }
+
+    /// Redraws the bar rows at the top of the image.
+    func updateBar(_ rgb: [UInt8], width: Int) {
+        bar = rgb
+        guard placed, top > 0, rgb.count == top * width * 3 else { return }
+        rgb.withUnsafeBytes { buf in
+            send("a=f,r=1,i=\(id),x=0,y=0,s=\(width),v=\(top),f=24,X=1,q=2", buf)
+        }
     }
 
     func update(_ rgb: UnsafeRawBufferPointer, _ r: Rect) {

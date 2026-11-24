@@ -24,8 +24,12 @@ rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --ratio 50 \
 - The argument is a URL, `host:port`, an absolute path, or search words. With
   none, the address bar opens for typing.
 - Keys in the pane: ctrl+L address bar, ctrl+R reload, alt+←/→ back/forward,
-  alt+= / alt+- / alt+0 zoom, ctrl+C or ctrl+Q quit. The bar's ❮ ❯ ⟳ are
-  clickable, and clicking the address edits it.
+  alt+= / alt+- / alt+0 zoom, ctrl+C or ctrl+Q quit. The bar's back, forward
+  and reload icons are clickable, and clicking the address edits it.
+- The address bar is drawn into the top row of the image (SF Symbols, system
+  font, a blue loading line), not written as a terminal text row: Rex pads a
+  text row with its edge cells' color, so a gray text row can't line up with
+  the page's edges.
 - Check it's running with `rex block call -s "$REX_SESSION" -b "$block" process`.
   A capture shows only the address bar row; the page never shows in captures.
 - To see what the pane shows, start it with `--log FILE` and send it SIGUSR1:
