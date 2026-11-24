@@ -13,6 +13,7 @@ struct BarState {
     var editing = false
     var edit = ""
     var cursor = 0
+    var caretVisible = true
 }
 
 enum BarAction {
@@ -80,8 +81,10 @@ enum BarRenderer {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: NSRect(x: x, y: 0, width: room + 4 * s, height: h)).addClip()
             draw(full, at: x - shift, height: h, font: urlFont)
-            text.setFill()
-            NSRect(x: x - shift + caret, y: h * 0.25, width: max(1, s), height: h * 0.5).fill()
+            if state.caretVisible {
+                text.setFill()
+                NSRect(x: x - shift + caret, y: h * 0.25, width: max(1, s), height: h * 0.5).fill()
+            }
             NSGraphicsContext.restoreGraphicsState()
         } else {
             let line = NSMutableAttributedString()

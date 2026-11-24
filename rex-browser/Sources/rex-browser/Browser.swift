@@ -75,6 +75,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     var barHeight = 28
     var barButtons: [(Range<Int>, BarAction)] = []
     var barTimer: Timer?
+    /// Blinks the caret while the address is being edited (macOS's rate).
+    var blinkTimer: Timer?
+    var caretVisible = true
     /// The colors last given to each row's edge cells, which Rex extends into
     /// the pane's side padding ("Fill Padding with Program Colors").
     var edgeColors: [String] = []
@@ -613,6 +616,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// Redraws the address bar into the top of the image. Calls within one
     /// run-loop pass (KVO bursts while loading) draw once.
     func renderBar() {
+        updateBlink()
         guard barTimer == nil else { return }
         barTimer = Timer.scheduledTimer(withTimeInterval: 0, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -620,6 +624,24 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
                 self?.drawBar()
             }
         }
+    }
+
+    /// Starts or stops the caret blink with editing; any redraw (a key, a
+    /// click) shows the caret again and restarts the blink.
+    private func updateBlink() {
+        caretVisible = true
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+        guard editing else { return }
+        let t = Timer(timeInterval: 0.53, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.editing else { return }
+                self.caretVisible.toggle()
+                self.drawBar()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        blinkTimer = t
     }
 
     private func drawBar() {
@@ -635,6 +657,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         state.editing = editing
         state.edit = String(edit)
         state.cursor = cursor
+        state.caretVisible = caretVisible
         let width = Int((Double(max(tsize.cols, 1)) * cellW).rounded())
         let (rgb, buttons) = BarRenderer.render(state, width: width, height: barHeight, scale: scale)
         barButtons = buttons
