@@ -24,7 +24,7 @@ rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --ratio 50 \
 - The argument is a URL, `host:port`, an absolute path, or search words. With
   none, the address bar opens for typing.
 - Keys in the pane: ctrl+L address bar, ctrl+R reload, alt+←/→ back/forward,
-  alt+= / alt+- / alt+0 zoom, ctrl+C or ctrl+Q quit. The bar's ← → ↻ are
+  alt+= / alt+- / alt+0 zoom, ctrl+C or ctrl+Q quit. The bar's ❮ ❯ ⟳ are
   clickable, and clicking the address edits it.
 - Check it's running with `rex block call -s "$REX_SESSION" -b "$block" process`.
   A capture shows only the address bar row; the page never shows in captures.

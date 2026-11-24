@@ -14,7 +14,7 @@ The top row is the address bar; the page fills the rest.
   --log FILE   write timings and errors to FILE
 
 Keys: ctrl+L address bar, ctrl+R reload, alt+←/→ back/forward,
-alt+= / alt+- / alt+0 zoom, ctrl+C or ctrl+Q quit. Click the bar's ← → ↻.
+alt+= / alt+- / alt+0 zoom, ctrl+C or ctrl+Q quit. Click the bar's ❮ ❯ ⟳.
 """
 
 struct Options {

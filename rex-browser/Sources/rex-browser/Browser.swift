@@ -547,9 +547,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
             term.write(s)
             return
         }
-        let back = web.canGoBack ? "←" : dim + "←" + normal
-        let forward = web.canGoForward ? "→" : dim + "→" + normal
-        let reload = web.isLoading ? "×" : "↻"
+        let back = web.canGoBack ? "❮" : dim + "❮" + normal
+        let forward = web.canGoForward ? "❯" : dim + "❯" + normal
+        let reload = web.isLoading ? "×" : "⟳"
         s += " \(back)  \(forward)  \(reload)  " + dim + "│" + normal + " "
         let used = 12
         var text: String
