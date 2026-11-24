@@ -28,7 +28,6 @@ enum BarRenderer {
     static let background = NSColor(srgbRed: 48 / 255, green: 48 / 255, blue: 48 / 255, alpha: 1)
     static let text = NSColor(srgbRed: 0.86, green: 0.86, blue: 0.86, alpha: 1)
     static let dim = NSColor(srgbRed: 0.50, green: 0.50, blue: 0.50, alpha: 1)
-    static let field = NSColor(srgbRed: 30 / 255, green: 30 / 255, blue: 30 / 255, alpha: 1)
 
     /// The bar's RGB pixels, and which horizontal pixel ranges are buttons.
     static func render(_ state: BarState, width: Int, height: Int, scale s: CGFloat) -> (rgb: [UInt8], buttons: [(Range<Int>, BarAction)]) {
@@ -72,9 +71,6 @@ enum BarRenderer {
         let urlFont = NSFont.systemFont(ofSize: 11.5 * s)
         let right = w - 10 * s
         if state.editing {
-            let fieldRect = NSRect(x: x - 6 * s, y: h * 0.12, width: right - x + 6 * s, height: h * 0.76)
-            field.setFill()
-            NSBezierPath(roundedRect: fieldRect, xRadius: 5 * s, yRadius: 5 * s).fill()
             let attrs: [NSAttributedString.Key: Any] = [.font: urlFont, .foregroundColor: text]
             let full = NSAttributedString(string: state.edit, attributes: attrs)
             let before = NSAttributedString(string: String(state.edit.prefix(state.cursor)), attributes: attrs)
