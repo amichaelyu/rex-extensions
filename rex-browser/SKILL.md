@@ -43,12 +43,24 @@ rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --ratio 50 \
   present: `_setWindowOcclusionDetectionEnabled:` (keep the offscreen page
   rendering at full speed) and `_setOverrideDeviceScaleFactor:` (render at the
   pane's device pixels; Rex reports 2x cells as 14x28 px).
-- Frames: `takeSnapshot` (2-7 ms) into an RGBA buffer, a row/edge diff against
-  the last frame sent, then `a=T` once and `a=f,r=1,x,y,s,v,X=1` for the
-  changed rectangle (temp files, `t=t`). 60 checks/s while active, 10/s idle.
+- Frames: `takeSnapshot` (about 3 ms at 1400x2128); its sRGB pixels are read
+  as they are (no redraw), diffed row by row against the last frame sent, and
+  each changed band of rows goes out as `a=f,r=1,x,y,s,v,X=1` (RGB packed with
+  vImage, sent as temp files `t=t`). A big change is checked for a scroll: row
+  hashes vote on the shift, and every run of rows that moved is copied inside
+  the terminal (`a=c` to a hidden gapless frame 2 and back, since a frame can't
+  be composed onto itself), so only the newly exposed strip is sent.
+- Pacing: a snapshot right after input, at most 120 a second; 60 checks a
+  second while the page changes, 10 when it's still, 4 after 5 s. No frame is
+  sent while the terminal still hasn't read the previous file.
+- Measured in a 1400x2128 px pane on Wikipedia: idle 0.3% of a core; hover
+  0.5 MB/s; a fast flick scroll 30-50 MB/s (full frames would be 110+); a small
+  spinner 60 fps at 2 MB/s and 9% of a core; a full-screen animation 60 fps at
+  537 MB/s and 24%.
 - Input: SGR mouse in pixels (modes 1003, 1006, 1016) becomes NSEvents
-  (clicks, drags, hover); wheel ticks scroll the element under the pointer
-  through JavaScript after dispatching a cancelable `wheel` event; keys become
+  (clicks, drags, hover; runs of moves collapse to the last); wheel ticks add
+  up and scroll the element under the pointer through one JavaScript call at a
+  time, after dispatching a cancelable `wheel` event; keys become
   key NSEvents with macOS key codes; bracketed paste inserts with
   `execCommand('insertText')`.
 - Right clicks aren't forwarded (a context menu would block the offscreen
