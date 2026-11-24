@@ -21,8 +21,8 @@ on `q`, Esc or Ctrl-C.
   ffmpeg decodes frames scaled to the pane and each one overwrites the image's
   pixels in place at the video's frame rate (no flashing), dropping frames when
   the terminal falls behind. No audio.
-  Keys: space pause/resume, left/right seek 5 s, r restart. Needs `ffmpeg` and
-  `ffprobe` on the machine running the pane.
+  Keys: space or k pause/resume, left/right seek 1 s, j/l seek 5 s, 1-9 speed
+  1x-9x, r restart. Needs `ffmpeg` and `ffprobe` on the machine running the pane.
 
 Run them in their own pane with Rex, never in your own pane (they take over the
 terminal until they exit):

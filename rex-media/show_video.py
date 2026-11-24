@@ -11,7 +11,8 @@ each frame replaces the last at the video's frame rate; frames are dropped when
 the terminal falls behind. The size follows the pane: a resize restarts the
 decoder at the current time at the new size. No audio.
 
-Keys: space pause/resume, left/right seek 5 s, r restart, q / Esc / Ctrl-C quit.
+Keys: space / k pause/resume, left/right seek 1 s, j/l seek 5 s, 1-9 speed
+1x-9x, r restart, q / Esc / Ctrl-C quit.
 
 Frames go to the terminal as temporary files (t=t), which the terminal reads and
 deletes; that needs the terminal on this machine. --inline sends them as
@@ -39,8 +40,12 @@ from pathlib import Path
 IMAGE_ID = 4343
 PLACEMENT_ID = 1
 CHUNK = 4096  # base64 bytes per escape sequence (the protocol's limit)
-SEEK_S = 5.0
-HINT = "space pause  ←/→ seek  r restart  q quit"
+# Seek step in seconds per key: arrows 1 s, j/l 5 s.
+SEEK = {
+    b"\x1b[C": 1.0, b"\x1bOC": 1.0, b"\x1b[D": -1.0, b"\x1bOD": -1.0,
+    b"l": 5.0, b"L": 5.0, b"j": -5.0, b"J": -5.0,
+}
+HINT = "space/k pause  ←/→ 1s  j/l 5s  1-9 speed  r restart  q quit"
 
 
 def probe(path: Path) -> tuple[int, int, float, float]:
@@ -192,8 +197,11 @@ def clock(s: float) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
-def status(layout: Layout, title: str, pos: float, dur: float, note: str) -> None:
-    text = f"{title}  {clock(pos)} / {clock(dur)}{note}   {HINT}"
+def status(
+    layout: Layout, title: str, pos: float, dur: float, note: str, speed: float
+) -> None:
+    rate = f"  {speed:g}x" if speed != 1 else ""
+    text = f"{title}  {clock(pos)} / {clock(dur)}{rate}{note}   {HINT}"
     cols = layout.size[0]
     write(f"\x1b[{layout.rows};1H\x1b[2K\x1b[2m{text[:cols]}\x1b[0m".encode())
 
@@ -227,6 +235,7 @@ def main() -> None:
     try:
         tty.setraw(fd)
         pos = 0.0  # playback time of the next frame, in seconds
+        speed = 1.0  # playback rate; frame at pos is due at t0 + pos / speed
         t0 = 0.0  # wall time (monotonic) at which pos 0 plays
         paused = ended = synced = False
         layout = None
@@ -245,7 +254,7 @@ def main() -> None:
                     still = decoder.read()
                     if still is not None:
                         screen.frame(layout, still)
-                    status(layout, title, pos, duration, "  [paused]")
+                    status(layout, title, pos, duration, "  [paused]", speed)
             if not paused and not ended:
                 rgb = decoder.read()
                 if rgb is None:
@@ -253,20 +262,21 @@ def main() -> None:
                         pos, layout = 0.0, None
                         continue
                     ended = True
-                    status(layout, title, duration, duration, "  [end]")
+                    status(layout, title, duration, duration, "  [end]", speed)
                 else:
                     if not synced:  # ffmpeg start-up is not playback lag
-                        t0 = time.monotonic() - pos  # wall time of pos 0
+                        t0 = time.monotonic() - pos / speed
                         synced = True
-                    lag = time.monotonic() - (t0 + pos)
-                    if lag < frame_s:  # on time: show it (else drop it)
+                    lag = time.monotonic() - (t0 + pos / speed)
+                    if lag < frame_s / speed:  # on time: show it (else drop it)
                         screen.frame(layout, rgb)
                     pos += frame_s
                     if pos - last_status >= 0.5:
-                        status(layout, title, pos, duration, "")
+                        status(layout, title, pos, duration, "", speed)
                         last_status = pos
             # Wait for the next frame's due time, or for a key / resize.
-            wait = 0.1 if paused or ended else max(t0 + pos - time.monotonic(), 0)
+            due = t0 + pos / speed
+            wait = 0.1 if paused or ended else max(due - time.monotonic(), 0)
             try:
                 ready, _, _ = select.select([fd], [], [], wait)
             except InterruptedError:
@@ -276,20 +286,23 @@ def main() -> None:
             key = os.read(fd, 64)
             if key[:1] in (b"q", b"Q", b"\x03") or key == b"\x1b":
                 break
-            if key == b" ":
+            if key in (b" ", b"k", b"K"):
                 if ended:
                     pos, paused, layout = 0.0, False, None
                     continue
                 paused = not paused
                 if not paused:
-                    t0 = time.monotonic() - pos
+                    t0 = time.monotonic() - pos / speed
                     synced = True
-                status(layout, title, pos, duration, "  [paused]" * paused)
+                status(layout, title, pos, duration, "  [paused]" * paused, speed)
             elif key in (b"r", b"R"):
                 pos, paused, layout = 0.0, False, None
-            elif key in (b"\x1b[C", b"\x1bOC", b"\x1b[D", b"\x1bOD"):
-                step = SEEK_S if key[-1:] == b"C" else -SEEK_S
-                pos = min(max(pos + step, 0.0), max(duration - frame_s, 0.0))
+            elif len(key) == 1 and key in b"123456789":
+                speed = float(key)
+                t0 = time.monotonic() - pos / speed  # keep pos, change rate
+                status(layout, title, pos, duration, "  [paused]" * paused, speed)
+            elif key in SEEK:
+                pos = min(max(pos + SEEK[key], 0.0), max(duration - frame_s, 0.0))
                 layout = None  # restart the decoder at the new time
     finally:
         if decoder:
