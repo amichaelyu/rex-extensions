@@ -10,8 +10,13 @@ skill's directory; both fit the media to their pane, keep its aspect ratio,
 follow the pane when it is resized (they check its size every 0.1 s), and quit
 on `q`, Esc or Ctrl-C.
 
-- `show_image.py IMAGE [--title TEXT]`: PNGs are sent as is; other formats are
-  converted with `sips` first.
+- `show_image.py IMAGE [--title TEXT]`: `sips` decodes the image once at
+  2048 px or more on its long side and it goes to Rex as raw RGB. A resize
+  re-places the image already in Rex instead of uploading it again (well under
+  1 ms). A camera RAW with an embedded JPEG preview (ARW, NEF, ...) shows the
+  preview at once and is developed only if the pane needs more pixels. Anything
+  `sips` reads works; without `sips`, only PNG. The script's docstring explains
+  each choice.
 - `show_video.py VIDEO [--title TEXT] [--loop] [--max-width PX] [--inline]`:
   ffmpeg decodes frames scaled to the pane and each one overwrites the image's
   pixels in place at the video's frame rate (no flashing), dropping frames when
@@ -56,7 +61,12 @@ rex window new -s "$REX_SESSION" "$(basename "$media")" --shell=none --json -- \
 - Rex frees an image as soon as it has no placement, and clearing the screen
   (`ESC[2J`) removes placements. So upload and place in one command (`a=T`),
   not a separate upload (`a=t`) and placement (`a=p`), or the placement fails
-  with `ENOENT`. Both viewers re-send on every draw.
+  with `ENOENT`. Erasing line by line (`ESC[2K`) keeps placements, so an
+  image already placed can be moved and resized with `a=p` (same `i` and `p`)
+  without uploading it again; `show_image.py` does that on every resize.
+- Rex takes raw RGB (`f=24`) about 3x faster than the same pixels as PNG
+  (`f=100`): 43 ms against 121 ms for 2048x1365 inline. zlib (`o=z`) is
+  supported but costs more to compress than it saves locally.
 - For video (or any image that changes), create the image and placement once
   (`a=T`) and then overwrite its pixels in place with an animation-frame edit
   (`a=f,r=1,X=1` with the same `i`, `s`, `v`; ~9000 edits/s). Re-sending the
