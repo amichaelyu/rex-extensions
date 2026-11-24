@@ -30,12 +30,13 @@ rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --ratio 50 \
   font, a blue loading line), not written as a terminal text row: Rex pads a
   text row with its edge cells' color, so a gray text row can't line up with
   the page's edges.
-- Side padding: each row's first and last cell get the page's edge color at
-  that row (the bar's gray on the bar row). With Rex's "Fill Padding with
-  Program Colors" on, the padding takes those colors, so it blends into the
-  page; beside photos and video it shows one color block per row. With that
-  setting off, the padding stays the pane's own color (Settings > Interface >
-  Padding sets its width).
+- Side padding: every row's first and last cell get the page's background
+  color (its CSS html or body background, else its most common solid edge
+  color; the bar's gray on the bar row). With Rex's "Fill Padding with Program
+  Colors" on, the padding takes those colors and blends into the page.
+  Per-row edge sampling was tried and dropped: beside images and video it
+  showed as blocks. With that setting off, the padding stays the pane's own
+  color (Settings > Interface > Padding sets its width).
 - Check it's running with `rex block call -s "$REX_SESSION" -b "$block" process`.
   A capture shows only the address bar row; the page never shows in captures.
 - To see what the pane shows, start it with `--log FILE` and send it SIGUSR1:

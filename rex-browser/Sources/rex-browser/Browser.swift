@@ -78,6 +78,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// The colors last given to each row's edge cells, which Rex extends into
     /// the pane's side padding ("Fill Padding with Program Colors").
     var edgeColors: [String] = []
+    var pageBackground: (UInt8, UInt8, UInt8)?
     var tsize = Terminal.Size(cols: 80, rows: 24, xpx: 0, ypx: 0)
     var cellW = 14.0
     var cellH = 28.0
@@ -543,32 +544,70 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     // MARK: Address bar
 
-    /// Colors each row's first and last cell like the page's edge pixels at
-    /// that row (the bar's gray for the bar row), so Rex's side padding,
-    /// which takes its color from those cells, blends into the page instead
-    /// of showing as dark bars. The cells sit under the image, so only the
-    /// padding shows them.
+    /// Colors each row's first and last cell so Rex's side padding, which
+    /// takes its color from those cells, blends into the page: the bar's gray
+    /// beside the bar, and one color for every page row: the page's own
+    /// background (read from its CSS), else its most common solid edge color.
+    /// Per-row edge sampling would turn into blocks beside images and video.
+    /// The cells sit under the image, so only the padding shows them.
     private func paintEdges(_ frame: Pixels) {
         let rows = max(tsize.rows, 1), cols = max(tsize.cols, 1)
         if edgeColors.count != rows { edgeColors = Array(repeating: "", count: rows) }
+        let page = pageBackground ?? commonEdgeColor(frame)
         var out = ""
         for r in 0..<rows {
-            let left: (UInt8, UInt8, UInt8), right: (UInt8, UInt8, UInt8)
-            if r < barRows {
-                left = (48, 48, 48)
-                right = left
-            } else {
-                let y = Int((Double(r) + 0.5) * cellH) - barHeight
-                left = frame.color(x: 0, y: y)
-                right = frame.color(x: frame.width - 1, y: y)
-            }
-            let key = "\(left)\(right)"
+            let c = r < barRows ? (UInt8(48), UInt8(48), UInt8(48)) : page
+            let key = "\(c)"
             guard edgeColors[r] != key else { continue }
             edgeColors[r] = key
-            out += "\u{1b}[\(r + 1);1H\u{1b}[48;2;\(left.0);\(left.1);\(left.2)m "
-            out += "\u{1b}[\(r + 1);\(cols)H\u{1b}[48;2;\(right.0);\(right.1);\(right.2)m "
+            let sgr = "\u{1b}[48;2;\(c.0);\(c.1);\(c.2)m "
+            out += "\u{1b}[\(r + 1);1H" + sgr + "\u{1b}[\(r + 1);\(cols)H" + sgr
         }
         if !out.isEmpty { term.write(out + "\u{1b}[0m") }
+    }
+
+    /// The color most rows' edges are, counting only rows where the edge is
+    /// one solid color for the whole row.
+    private func commonEdgeColor(_ frame: Pixels) -> (UInt8, UInt8, UInt8) {
+        var counts: [String: ((UInt8, UInt8, UInt8), Int)] = [:]
+        let rows = max(tsize.rows, 1)
+        for r in barRows..<rows {
+            let y0 = max(Int(Double(r) * cellH) - barHeight, 0)
+            let y1 = min(Int(Double(r + 1) * cellH) - barHeight, frame.height)
+            guard y1 > y0 else { continue }
+            for x in [0, frame.width - 1] {
+                let c = frame.color(x: x, y: y0)
+                if (y0..<y1).allSatisfy({ frame.color(x: x, y: $0) == c }) {
+                    let k = "\(c)"
+                    counts[k] = (c, (counts[k]?.1 ?? 0) + 1)
+                }
+            }
+        }
+        return counts.values.max(by: { $0.1 < $1.1 })?.0 ?? frame.color(x: 0, y: 0)
+    }
+
+    /// Reads the page's background color (html, else body) after loads.
+    func refreshBackground() {
+        let js = """
+        (() => {
+          for (const e of [document.documentElement, document.body]) {
+            if (!e) continue;
+            const c = getComputedStyle(e).backgroundColor;
+            if (c && c !== 'transparent' && !/rgba\\(.*,\\s*0\\)$/.test(c)) return c;
+          }
+          return '';
+        })()
+        """
+        web.evaluateJavaScript(js) { [weak self] result, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let numbers = ((result as? String) ?? "").split(whereSeparator: { !"0123456789.".contains($0) }).compactMap { Double($0) }
+                let color = numbers.count >= 3 ? (UInt8(min(numbers[0], 255)), UInt8(min(numbers[1], 255)), UInt8(min(numbers[2], 255))) : nil
+                guard "\(String(describing: color))" != "\(String(describing: self.pageBackground))" else { return }
+                self.pageBackground = color
+                if let frame = self.previous { self.paintEdges(frame) }
+            }
+        }
     }
 
     /// Redraws the address bar into the top of the image. Calls within one
@@ -886,6 +925,15 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         failed(error)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        refreshBackground()
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        pageBackground = nil
+        refreshBackground()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
