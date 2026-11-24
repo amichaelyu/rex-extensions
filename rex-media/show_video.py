@@ -12,7 +12,7 @@ the terminal falls behind. The size follows the pane: a resize restarts the
 decoder at the current time at the new size. No audio.
 
 Keys: space / k pause/resume, left/right seek 1 s, j/l seek 5 s, 1-9 speed
-1x-9x, r restart, q / Esc / Ctrl-C quit.
+1x-9x, r restart, f show in Finder, q / Esc / Ctrl-C quit.
 
 Frames go to the terminal as temporary files (t=t), which the terminal reads and
 deletes; that needs the terminal on this machine. --inline sends them as
@@ -45,7 +45,7 @@ SEEK = {
     b"\x1b[C": 1.0, b"\x1bOC": 1.0, b"\x1b[D": -1.0, b"\x1bOD": -1.0,
     b"l": 5.0, b"L": 5.0, b"j": -5.0, b"J": -5.0,
 }
-HINT = "space/k pause  ←/→ 1s  j/l 5s  1-9 speed  r restart  q quit"
+HINT = "space/k pause  ←/→ 1s  j/l 5s  1-9 speed  r restart  f finder  q quit"
 
 
 def probe(path: Path) -> tuple[int, int, float, float]:
@@ -78,6 +78,18 @@ def term_size() -> tuple[int, int, int, int]:
     raw = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\0" * 8)
     rows, cols, xpx, ypx = struct.unpack("HHHH", raw)
     return cols, rows, xpx, ypx
+
+
+def reveal(path: Path) -> None:
+    """Select the file in a Finder window (macOS `open -R`)."""
+    try:
+        subprocess.Popen(
+            ["open", "-R", str(path.resolve())],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
 
 
 def write(data: bytes) -> None:
@@ -295,6 +307,8 @@ def main() -> None:
                     t0 = time.monotonic() - pos / speed
                     synced = True
                 status(layout, title, pos, duration, "  [paused]" * paused, speed)
+            elif key in (b"f", b"F"):
+                reveal(args.video)
             elif key in (b"r", b"R"):
                 pos, paused, layout = 0.0, False, None
             elif len(key) == 1 and key in b"123456789":

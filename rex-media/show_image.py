@@ -7,7 +7,8 @@
     show_image.py IMAGE [--title TEXT]
 
 Fits the image to the terminal (keeping its aspect ratio), centres it, and
-rescales it whenever the pane changes size. Press q, Esc or Ctrl-C to close.
+rescales it whenever the pane changes size. Press f to show the file in
+Finder, q, Esc or Ctrl-C to close.
 
 What keeps it fast:
 
@@ -262,6 +263,18 @@ def term_size() -> tuple[int, int, int, int]:
     return cols, rows, xpx, ypx
 
 
+def reveal(path: Path) -> None:
+    """Select the file in a Finder window (macOS `open -R`)."""
+    try:
+        subprocess.Popen(
+            ["open", "-R", str(path.resolve())],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
+
+
 def write(data: bytes) -> None:
     os.write(sys.stdout.fileno(), data)
 
@@ -322,7 +335,7 @@ def draw(src: Source, title: str, develop: bool = False) -> None:
     write(b"".join(out))
     if changed:
         transmit_and_place(pic, c, r)
-    hint = f"{title}  (q to close)"[:cols]
+    hint = f"{title}  (f finder  q close)"[:cols]
     write(f"\x1b[{rows};1H\x1b[2m{hint}\x1b[0m".encode())
 
 
@@ -364,6 +377,8 @@ def main() -> None:
                     continue
                 if key[:1] in (b"q", b"Q", b"\x03") or key == b"\x1b":
                     break
+                if key in (b"f", b"F"):
+                    reveal(args.image)
     finally:
         write(f"\x1b_Ga=d,d=I,i={IMAGE_ID},q=2\x1b\\".encode())
         write(b"\x1b[2J\x1b[H\x1b[?25h")
