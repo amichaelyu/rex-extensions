@@ -222,6 +222,12 @@ final class Pixels {
 
     func row(_ y: Int) -> UnsafeRawPointer { base + y * bytesPerRow }
 
+    /// The RGB color at (x, y).
+    func color(x: Int, y: Int) -> (UInt8, UInt8, UInt8) {
+        let p = row(min(max(y, 0), height - 1)).assumingMemoryBound(to: UInt8.self) + min(max(x, 0), width - 1) * 4
+        return bgra ? (p[2], p[1], p[0]) : (p[0], p[1], p[2])
+    }
+
     /// The rectangles that differ from `old`, as bands of rows (a band ends
     /// after 16 unchanged rows), each as narrow as its changed columns.
     /// Rows inside a shift's range are compared with the old rows it moved.

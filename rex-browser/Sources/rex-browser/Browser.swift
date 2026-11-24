@@ -75,6 +75,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     var barHeight = 28
     var barButtons: [(Range<Int>, BarAction)] = []
     var barTimer: Timer?
+    /// The colors last given to each row's edge cells, which Rex extends into
+    /// the pane's side padding ("Fill Padding with Program Colors").
+    var edgeColors: [String] = []
     var tsize = Terminal.Size(cols: 80, rows: 24, xpx: 0, ypx: 0)
     var cellW = 14.0
     var cellH = 28.0
@@ -364,6 +367,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         var blank = "\u{1b}[0m"
         for r in 1...rows { blank += "\u{1b}[\(r);1H\u{1b}[2K" }
         term.write(blank)
+        edgeColors = []
         kitty.place(cols: cols, rows: rows, row: 1)
         renderBar()
         requestFrame()
@@ -475,6 +479,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
             stats.sentFrames += 1
             previous = frame
             idleFrames = 0
+            paintEdges(frame)
             renderBar()
             logStats()
             return
@@ -517,6 +522,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         stats.sentFrames += 1
         previous = frame
         idleFrames = 0
+        paintEdges(frame)
         logStats()
     }
 
@@ -536,6 +542,34 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     // MARK: Address bar
+
+    /// Colors each row's first and last cell like the page's edge pixels at
+    /// that row (the bar's gray for the bar row), so Rex's side padding,
+    /// which takes its color from those cells, blends into the page instead
+    /// of showing as dark bars. The cells sit under the image, so only the
+    /// padding shows them.
+    private func paintEdges(_ frame: Pixels) {
+        let rows = max(tsize.rows, 1), cols = max(tsize.cols, 1)
+        if edgeColors.count != rows { edgeColors = Array(repeating: "", count: rows) }
+        var out = ""
+        for r in 0..<rows {
+            let left: (UInt8, UInt8, UInt8), right: (UInt8, UInt8, UInt8)
+            if r < barRows {
+                left = (48, 48, 48)
+                right = left
+            } else {
+                let y = Int((Double(r) + 0.5) * cellH) - barHeight
+                left = frame.color(x: 0, y: y)
+                right = frame.color(x: frame.width - 1, y: y)
+            }
+            let key = "\(left)\(right)"
+            guard edgeColors[r] != key else { continue }
+            edgeColors[r] = key
+            out += "\u{1b}[\(r + 1);1H\u{1b}[48;2;\(left.0);\(left.1);\(left.2)m "
+            out += "\u{1b}[\(r + 1);\(cols)H\u{1b}[48;2;\(right.0);\(right.1);\(right.2)m "
+        }
+        if !out.isEmpty { term.write(out + "\u{1b}[0m") }
+    }
 
     /// Redraws the address bar into the top of the image. Calls within one
     /// run-loop pass (KVO bursts while loading) draw once.
