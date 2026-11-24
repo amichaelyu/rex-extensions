@@ -75,7 +75,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     var barHeight = 28
     var barButtons: [(Range<Int>, BarAction)] = []
     var barTimer: Timer?
-    /// Blinks the caret while the address is being edited (macOS's rate).
+    /// Blinks the caret while the address is being edited.
     var blinkTimer: Timer?
     var caretVisible = true
     /// The colors last given to each row's edge cells, which Rex extends into
@@ -633,7 +633,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         blinkTimer?.invalidate()
         blinkTimer = nil
         guard editing else { return }
-        let t = Timer(timeInterval: 0.53, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 0.35, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.editing else { return }
                 self.caretVisible.toggle()
