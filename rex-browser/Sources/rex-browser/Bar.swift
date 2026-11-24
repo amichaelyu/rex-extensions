@@ -83,7 +83,7 @@ enum BarRenderer {
             draw(full, at: x - shift, height: h, font: urlFont)
             if state.caretVisible {
                 text.setFill()
-                NSRect(x: x - shift + caret, y: h * 0.25, width: max(1, s), height: h * 0.5).fill()
+                NSRect(x: x - shift + caret, y: h * 0.15, width: max(1, s), height: h * 0.7).fill()
             }
             NSGraphicsContext.restoreGraphicsState()
         } else {
