@@ -11,6 +11,30 @@ final class HostWindow: NSWindow {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
+/// The page view. Real pointer moves reach WebKit through tracking areas, not
+/// through the view; the hidden window sits on a real screen under the real
+/// cursor, so those areas are removed and only rex-browser's moves get in.
+final class PageView: WKWebView {
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {}
+
+    /// WKWebView has no `mouseMoved:` of its own (moves arrive through its
+    /// tracking-area owner), so a move is handed to WebKit with its private
+    /// `_simulateMouseMove:`, which is what that owner calls.
+    func simulateMove(_ event: NSEvent) {
+        let sel = NSSelectorFromString("_simulateMouseMove:")
+        if responds(to: sel) {
+            perform(sel, with: event)
+        } else {
+            Log.write("missing _simulateMouseMove:")
+        }
+    }
+}
+
 /// Calls a private WebKit setter if this WebKit has it.
 @MainActor
 func callSPI(_ object: NSObject, _ name: String, bool value: Bool) {
@@ -41,7 +65,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     let parser = InputParser()
     let kitty: KittyImage
     var window: HostWindow!
-    var web: WKWebView!
+    var web: PageView!
     var observations: [NSKeyValueObservation] = []
     var sources: [DispatchSourceProtocol] = []
     var timer: Timer?
@@ -162,7 +186,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         config.userContentController.addUserScript(WKUserScript(
             source: VideoFrames.script, injectionTime: .atDocumentStart, forMainFrameOnly: false
         ))
-        web = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
+        web = PageView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
         web.navigationDelegate = self
         web.uiDelegate = self
         // The window is offscreen, so keep WebKit from treating the page as
@@ -762,7 +786,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         case .leftMouseDown: web.mouseDown(with: event)
         case .leftMouseUp: web.mouseUp(with: event)
         case .leftMouseDragged: web.mouseDragged(with: event)
-        default: web.mouseMoved(with: event)
+        default: web.simulateMove(event)
         }
     }
 

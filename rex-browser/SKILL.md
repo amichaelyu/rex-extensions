@@ -67,7 +67,10 @@ rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --ratio 50 \
   spinner 60 fps at 2 MB/s and 9% of a core; a full-screen animation 60 fps at
   537 MB/s and 24%.
 - Input: SGR mouse in pixels (modes 1003, 1006, 1016) becomes NSEvents
-  (clicks, drags, hover; runs of moves collapse to the last); wheel ticks add
+  (clicks, drags, hover; runs of moves collapse to the last). WKWebView has no
+  `mouseMoved:` (real moves come through its tracking-area owner), so hover
+  moves go in with WebKit's private `_simulateMouseMove:`; the view's tracking
+  areas are removed so the real cursor can't interfere; wheel ticks add
   up and scroll the element under the pointer through one JavaScript call at a
   time, after dispatching a cancelable `wheel` event; keys become
   key NSEvents with macOS key codes; bracketed paste inserts with
