@@ -173,7 +173,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         // Hide the cursor, clear, and turn on any-motion SGR mouse reports in
         // pixels (1003, 1006, 1016) and bracketed paste (2004). Normal screen:
         // Rex doesn't draw kitty images on the alternate one.
-        term.write("\u{1b}[?7l\u{1b}[?25l\u{1b}[2J\u{1b}[?1003h\u{1b}[?1006h\u{1b}[?1016h\u{1b}[?2004h")
+        term.write("\u{1b}[?7l\u{1b}[?25l\u{1b}[H\u{1b}[2J\u{1b}[3J\u{1b}[?1003h\u{1b}[?1006h\u{1b}[?1016h\u{1b}[?2004h")
 
         let config = WKWebViewConfiguration()
         config.preferences.inactiveSchedulingPolicy = .none
@@ -550,8 +550,8 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         let back = web.canGoBack ? "←" : dim + "←" + normal
         let forward = web.canGoForward ? "→" : dim + "→" + normal
         let reload = web.isLoading ? "×" : "↻"
-        s += " \(back) \(forward) \(reload) " + dim + "│" + normal + " "
-        let used = 9
+        s += " \(back)  \(forward)  \(reload)  " + dim + "│" + normal + " "
+        let used = 12
         var text: String
         var detail = ""
         if let notice {
@@ -768,8 +768,8 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     private func barClick(_ col: Int) {
         switch col {
         case 0...2: web.goBack()
-        case 3...4: web.goForward()
-        case 5...6: if web.isLoading { web.stopLoading() } else { web.reload() }
+        case 3...5: web.goForward()
+        case 6...8: if web.isLoading { web.stopLoading() } else { web.reload() }
         default: startEditing(prefill: web.url?.absoluteString ?? "")
         }
     }
