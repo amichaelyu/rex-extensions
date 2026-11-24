@@ -32,6 +32,11 @@ final class KittyImage {
     let inline: Bool
     let id = 6161
     private(set) var placed = false
+    /// Gray rows above the page inside the image (padding under the address
+    /// bar); page coordinates are offset by this many pixels.
+    var top = 0
+    /// The address bar's color (xterm 236).
+    static let barColor: [UInt8] = [48, 48, 48]
     private var hasScratch = false
     private var sent: [String] = []
     private var lastFile: String?
@@ -53,7 +58,13 @@ final class KittyImage {
 
     func create(_ rgb: UnsafeRawBufferPointer, width: Int, height: Int, cols: Int, rows: Int, row: Int) {
         term.write("\u{1b}[\(row);1H")
-        send("a=T,f=24,s=\(width),v=\(height),i=\(id),p=1,c=\(cols),r=\(rows),C=1,q=2", rgb)
+        var image = [UInt8]()
+        image.reserveCapacity((height + top) * width * 3)
+        for _ in 0..<(top * width) { image += Self.barColor }
+        image += rgb
+        image.withUnsafeBytes { all in
+            send("a=T,f=24,s=\(width),v=\(height + top),i=\(id),p=1,c=\(cols),r=\(rows),C=1,q=2", all)
+        }
         placed = true
         hasScratch = false
     }
@@ -65,7 +76,7 @@ final class KittyImage {
     }
 
     func update(_ rgb: UnsafeRawBufferPointer, _ r: Rect) {
-        send("a=f,r=1,i=\(id),x=\(r.x),y=\(r.y),s=\(r.w),v=\(r.h),f=24,X=1,q=2", rgb)
+        send("a=f,r=1,i=\(id),x=\(r.x),y=\(r.y + top),s=\(r.w),v=\(r.h),f=24,X=1,q=2", rgb)
     }
 
     /// Moves runs of rows inside the terminal's copy of the image (frame 1).
@@ -81,10 +92,10 @@ final class KittyImage {
         }
         var out = ""
         for s in runs {
-            out += "\u{1b}_Ga=c,i=\(id),r=1,c=2,X=0,Y=\(s.start + s.by),x=0,y=\(s.start),w=\(width),h=\(s.end - s.start),C=1,q=2\u{1b}\\"
+            out += "\u{1b}_Ga=c,i=\(id),r=1,c=2,X=0,Y=\(s.start + s.by + top),x=0,y=\(s.start + top),w=\(width),h=\(s.end - s.start),C=1,q=2\u{1b}\\"
         }
         for s in runs {
-            out += "\u{1b}_Ga=c,i=\(id),r=2,c=1,X=0,Y=\(s.start),x=0,y=\(s.start),w=\(width),h=\(s.end - s.start),C=1,q=2\u{1b}\\"
+            out += "\u{1b}_Ga=c,i=\(id),r=2,c=1,X=0,Y=\(s.start + top),x=0,y=\(s.start + top),w=\(width),h=\(s.end - s.start),C=1,q=2\u{1b}\\"
         }
         term.write(out)
     }

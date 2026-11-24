@@ -342,7 +342,11 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         callSPI(web, "_setOverrideDeviceScaleFactor:", float: scale)
 
         let width = Int((Double(cols) * cellW).rounded())
-        let height = Int((Double(rows - barRows) * cellH).rounded())
+        // 2.5 pt of bar-colored padding under the bar: the bar's glyphs sit
+        // 2.5 pt lower than the middle of their row, so this evens it out.
+        let pad = Int((2.5 * Double(scale)).rounded())
+        kitty.top = pad
+        let height = Int((Double(rows - barRows) * cellH).rounded()) - pad
         window.setContentSize(NSSize(width: CGFloat(width) / scale, height: CGFloat(height) / scale))
         window.setFrameOrigin(NSScreen.main?.frame.origin ?? .zero)
 
@@ -727,7 +731,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
             if m.kind == .press, m.button == 0 { barClick(col) }
             return
         }
-        let point = CGPoint(x: px / scale, y: (py - Double(barRows) * cellH) / scale)
+        let pageY = py - Double(barRows) * cellH - Double(kitty.top)
+        if pageY < 0, !leftDown { return }
+        let point = CGPoint(x: px / scale, y: max(pageY, 0) / scale)
         var flags: NSEvent.ModifierFlags = []
         if m.mods.contains(.shift) { flags.insert(.shift) }
         if m.mods.contains(.alt) { flags.insert(.option) }
