@@ -22,6 +22,12 @@ final class PageView: WKWebView {
 
     override func cursorUpdate(with event: NSEvent) {}
 
+    /// WebKit shows `title` hovers as native tooltips, which would open on the
+    /// real screen over Rex; registering none keeps them from showing.
+    override func addToolTip(_ rect: NSRect, owner: Any, userData data: UnsafeMutableRawPointer?) -> NSView.ToolTipTag {
+        0
+    }
+
     /// WKWebView has no `mouseMoved:` of its own (moves arrive through its
     /// tracking-area owner), so a move is handed to WebKit with its private
     /// `_simulateMouseMove:`, which is what that owner calls.
@@ -196,6 +202,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         config.userContentController.addUserScript(WKUserScript(
             source: VideoFrames.script, injectionTime: .atDocumentStart, forMainFrameOnly: false
         ))
+        config.userContentController.addUserScript(WKUserScript(
+            source: Popups.script, injectionTime: .atDocumentStart, forMainFrameOnly: false
+        ))
+        Popups.suppressNativeMenus()
         web = PageView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
         web.navigationDelegate = self
         web.uiDelegate = self
