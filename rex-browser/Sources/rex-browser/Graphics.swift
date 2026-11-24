@@ -58,6 +58,12 @@ final class KittyImage {
         hasScratch = false
     }
 
+    /// Re-places the current image over a new cell area (the terminal scales it).
+    func place(cols: Int, rows: Int, row: Int) {
+        guard placed else { return }
+        term.write("\u{1b}[\(row);1H\u{1b}_Ga=p,i=\(id),p=1,c=\(cols),r=\(rows),C=1,q=2\u{1b}\\")
+    }
+
     func update(_ rgb: UnsafeRawBufferPointer, _ r: Rect) {
         send("a=f,r=1,i=\(id),x=\(r.x),y=\(r.y),s=\(r.w),v=\(r.h),f=24,X=1,q=2", rgb)
     }

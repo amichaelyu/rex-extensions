@@ -63,6 +63,17 @@ rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --ratio 50 \
   time, after dispatching a cancelable `wheel` event; keys become
   key NSEvents with macOS key codes; bracketed paste inserts with
   `execCommand('insertText')`.
+- Nothing persists: the data store is `nonPersistent()`, so cookies, logins,
+  storage and cache live only as long as the pane.
+- Video: a document-start script hooks `requestVideoFrameCallback` on every
+  playing video and messages each presented frame, which triggers a snapshot;
+  the timer drops to 15 checks a second meanwhile. A 30 fps video arrives at
+  30 updates a second in Rex.
+- Resize: no debounce; the old image is re-placed over the new cell area at
+  once (`a=p`, the terminal stretches it) and the sharp frame follows in about
+  30 ms.
+- The hidden window is `.transient` and `.ignoresCycle`, so it stays out of
+  Mission Control and window cycling.
 - Right clicks aren't forwarded (a context menu would block the offscreen
   window). JS alerts, confirms and prompts are answered automatically and shown
   in the bar.

@@ -70,7 +70,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     var ticks = 0
     struct Stats {
         var frames = 0, sentFrames = 0, pixels = 0
-        var rects = 0, shifts = 0
+        var rects = 0, shifts = 0, busy = 0
         var snap = 0.0, draw = 0.0, diff = 0.0, scroll = 0.0, pack = 0.0, send = 0.0
         var since = Date()
     }
@@ -95,6 +95,13 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         super.init()
     }
 
+    var lastVideoFrame = 0.0
+
+    func videoFrame() {
+        lastVideoFrame = CACurrentMediaTime()
+        requestFrame()
+    }
+
     // MARK: Lifecycle
 
     func start() {
@@ -107,7 +114,14 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         let config = WKWebViewConfiguration()
         config.preferences.inactiveSchedulingPolicy = .none
         config.applicationNameForUserAgent = "Version/26.0 Safari/605.1.15"
-        config.websiteDataStore = .default()
+        // Nothing outlives the pane: cookies, storage and cache stay in memory.
+        config.websiteDataStore = .nonPersistent()
+        // Each presented video frame asks for a snapshot, so video is sampled
+        // in step with its own frames instead of beating against the timer.
+        config.userContentController.add(VideoFrames(self), name: "rexFrame")
+        config.userContentController.addUserScript(WKUserScript(
+            source: VideoFrames.script, injectionTime: .atDocumentStart, forMainFrameOnly: false
+        ))
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
         web.navigationDelegate = self
         web.uiDelegate = self
@@ -120,6 +134,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
             styleMask: [.borderless], backing: .buffered, defer: false
         )
         window.isReleasedWhenClosed = false
+        // Not a window anyone should see: keep it out of Mission Control,
+        // window cycling and the Window menu.
+        window.collectionBehavior = [.transient, .ignoresCycle, .fullScreenNone]
+        window.isExcludedFromWindowsMenu = true
         window.contentView = web
         window.orderFrontRegardless()
         window.makeFirstResponder(web)
@@ -232,7 +250,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     private func scheduleLayout() {
         guard !resizePending else { return }
         resizePending = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
                 self?.resizePending = false
                 self?.layout()
@@ -261,10 +279,11 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         pxH = height
         previous = nil
         generation += 1
-        kitty.delete()
-        term.write("\u{1b}[2J")
+        // Stretch the old frame over the new size right away; the next
+        // snapshot replaces it at full sharpness.
+        kitty.place(cols: cols, rows: rows - barRows, row: barRows + 1)
         renderBar()
-        wake()
+        requestFrame()
         Log.write("layout \(cols)x\(rows) cells, \(width)x\(height) px, cell \(cellW)x\(cellH), scale \(scale)")
     }
 
@@ -282,6 +301,8 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         if ticks % 15 == 0, !resizePending, term.size() != tsize { scheduleLayout() }
         // Still pages are checked 10 times a second, then 4 after 5 s.
         if !frameRequested {
+            // While a video drives frames, the timer only looks for other changes.
+            if CACurrentMediaTime() - lastVideoFrame < 0.2, ticks % 4 != 0 { return }
             if idleFrames > 80, ticks % 15 != 0 { return }
             if idleFrames > 30, ticks % 6 != 0 { return }
         }
@@ -312,7 +333,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
             return
         }
         // Don't queue frames the terminal hasn't caught up with; the timer retries.
-        if kitty.busy { return }
+        if kitty.busy {
+            stats.busy += 1
+            return
+        }
         frameRequested = false
         snapshotting = true
         let gen = generation
@@ -410,10 +434,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
         guard elapsed >= 2 else { return }
         let n = Double(max(stats.frames, 1)), m = Double(max(stats.sentFrames, 1))
         Log.write(String(
-            format: "%.0f snap/s %.0f sent/s | per snapshot: snap %.1f read %.1f diff %.1f ms | per sent: scroll %.1f pack %.1f send %.1f ms, %.0f kpx, %.1f rects, %d shifts | %.1f MB/s",
+            format: "%.0f snap/s %.0f sent/s | per snapshot: snap %.1f read %.1f diff %.1f ms | per sent: scroll %.1f pack %.1f send %.1f ms, %.0f kpx, %.1f rects, %d shifts | %.1f MB/s | %d waits for the terminal",
             n / elapsed, Double(stats.sentFrames) / elapsed, stats.snap / n, stats.draw / n, stats.diff / n,
             stats.scroll / m, stats.pack / m, stats.send / m, Double(stats.pixels) / m / 1000,
-            Double(stats.rects) / m, stats.shifts, Double(kitty.bytesSent) / elapsed / 1e6
+            Double(stats.rects) / m, stats.shifts, Double(kitty.bytesSent) / elapsed / 1e6, stats.busy
         ))
         stats = Stats()
         kitty.resetBytes()
@@ -773,5 +797,33 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate {
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         show(notice: "page crashed; reloading")
         webView.reload()
+    }
+}
+
+/// Relays `requestVideoFrameCallback` from pages (a weak hop, since the
+/// content controller retains its handlers).
+final class VideoFrames: NSObject, WKScriptMessageHandler {
+    weak var browser: Browser?
+
+    init(_ browser: Browser) { self.browser = browser }
+
+    static let script = """
+    (() => {
+      const seen = new WeakSet();
+      const watch = v => {
+        if (seen.has(v) || !v.requestVideoFrameCallback) return;
+        seen.add(v);
+        const frame = () => {
+          try { webkit.messageHandlers.rexFrame.postMessage(0); } catch (e) {}
+          v.requestVideoFrameCallback(frame);
+        };
+        v.requestVideoFrameCallback(frame);
+      };
+      document.addEventListener('play', e => { if (e.target instanceof HTMLVideoElement) watch(e.target); }, true);
+    })();
+    """
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        MainActor.assumeIsolated { browser?.videoFrame() }
     }
 }
